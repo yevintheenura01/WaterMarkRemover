@@ -202,9 +202,26 @@ def remove_watermark_video(video_path, custom_name=""):
         print(f"Using {len(watermark_areas)} manually selected watermark areas")
         mask = create_watermark_mask(first_frame, watermark_areas)
     
-    # Create temporary video file without audio first
+    # Compute 4:5 center-crop rectangle based on the first frame
+    target_aspect = 4 / 5.0
+    current_aspect = width / height if height != 0 else target_aspect
+    if current_aspect > target_aspect:
+        # Too wide: reduce width
+        crop_h = height
+        crop_w = int(round(crop_h * target_aspect))
+    else:
+        # Too tall: reduce height
+        crop_w = width
+        crop_h = int(round(crop_w / target_aspect))
+    # Ensure even dimensions for codec compatibility
+    crop_w -= crop_w % 2
+    crop_h -= crop_h % 2
+    crop_x = max(0, (width - crop_w) // 2)
+    crop_y = max(0, (height - crop_h) // 2)
+
+    # Create temporary video file without audio first, using cropped size
     temp_video = os.path.join(tempfile.gettempdir(), "temp_video_no_audio.mp4")
-    out = cv2.VideoWriter(temp_video, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(temp_video, fourcc, fps, (crop_w, crop_h))
 
     print("Processing video frames...")
     frame_count = 0
@@ -227,7 +244,9 @@ def remove_watermark_video(video_path, custom_name=""):
             frame_mask = cv2.morphologyEx(frame_mask, cv2.MORPH_OPEN, kernel)
             result = cv2.inpaint(frame, frame_mask, 5, cv2.INPAINT_NS)
         
-        out.write(result)
+        # Center-crop to 4:5 aspect before writing
+        cropped = result[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
+        out.write(cropped)
         frame_count += 1
         
         if frame_count % 30 == 0:  # Progress indicator
