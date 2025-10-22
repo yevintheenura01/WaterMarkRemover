@@ -108,21 +108,44 @@ def remove_watermark_image(image_path, custom_name=""):
         print(f"Using {len(watermark_areas)} manually selected watermark areas")
         mask = create_watermark_mask(img, watermark_areas)
 
-    # Inpainting to remove watermark
-    result = cv2.inpaint(img, mask, 3, cv2.INPAINT_TELEA)
+    # High-quality inpainting to remove watermark
+    # Use INPAINT_NS for better quality than INPAINT_TELEA
+    result = cv2.inpaint(img, mask, 5, cv2.INPAINT_NS)
 
     # Save result with custom name or default
     if custom_name:
         # If user provided custom name, use it
-        if not custom_name.endswith(('.png', '.jpg', '.jpeg')):
-            custom_name += '.png'  # Default to PNG if no extension
+        if not custom_name.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):
+            custom_name += '.png'  # Default to PNG for lossless quality
         out_path = os.path.join(os.path.dirname(image_path), custom_name)
     else:
-        # Default naming
-        out_path = os.path.splitext(image_path)[0] + "_nowm.png"
+        # Default naming - preserve original format for quality
+        base_name = os.path.splitext(image_path)[0]
+        original_ext = os.path.splitext(image_path)[1].lower()
+        if original_ext in ['.jpg', '.jpeg']:
+            out_path = base_name + "_nowm.jpg"
+        elif original_ext in ['.png']:
+            out_path = base_name + "_nowm.png"
+        elif original_ext in ['.tiff', '.tif']:
+            out_path = base_name + "_nowm.tiff"
+        else:
+            out_path = base_name + "_nowm.png"  # Default to PNG for lossless
     
-    cv2.imwrite(out_path, result)
-    print("Processed image saved to", out_path)
+    # High-quality image saving with appropriate parameters
+    if out_path.lower().endswith(('.jpg', '.jpeg')):
+        # For JPEG, use high quality (95-100)
+        cv2.imwrite(out_path, result, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    elif out_path.lower().endswith('.png'):
+        # For PNG, use maximum compression level for quality
+        cv2.imwrite(out_path, result, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+    elif out_path.lower().endswith(('.tiff', '.tif')):
+        # For TIFF, use lossless compression
+        cv2.imwrite(out_path, result, [cv2.IMWRITE_TIFF_COMPRESSION, 1])
+    else:
+        # Default high-quality save
+        cv2.imwrite(out_path, result)
+    
+    print("High-quality processed image saved to", out_path)
 
 def remove_watermark_video(video_path, custom_name=""):
     cap = cv2.VideoCapture(video_path)
@@ -130,10 +153,15 @@ def remove_watermark_video(video_path, custom_name=""):
         print("Failed to open video:", video_path)
         return
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # Use H.264 codec for better quality than mp4v
+    fourcc = cv2.VideoWriter_fourcc(*'H264')
     fps = cap.get(cv2.CAP_PROP_FPS)
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Get original video properties for quality preservation
+    original_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+    original_bitrate = cap.get(cv2.CAP_PROP_BITRATE)
     
     # Save result with custom name or default
     if custom_name:
@@ -144,6 +172,35 @@ def remove_watermark_video(video_path, custom_name=""):
     else:
         # Default naming
         out_path = os.path.splitext(video_path)[0] + "_nowm.mp4"
+    
+    # Get first frame for watermark selection
+    ret, first_frame = cap.read()
+    if not ret:
+        print("Failed to read first frame from video")
+        cap.release()
+        return
+    
+    # Reset video to beginning
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    
+    print("Select watermark areas on the first frame:")
+    watermark_areas = select_watermark_areas(first_frame)
+    
+    if not watermark_areas:
+        print("No watermark areas selected. Using automatic detection...")
+        # Improved automatic detection
+        gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
+        # Use adaptive threshold for better detection
+        mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+        # Invert mask to get bright areas (watermarks)
+        mask = cv2.bitwise_not(mask)
+        # Apply morphological operations to clean up the mask
+        kernel = np.ones((3,3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    else:
+        print(f"Using {len(watermark_areas)} manually selected watermark areas")
+        mask = create_watermark_mask(first_frame, watermark_areas)
     
     # Create temporary video file without audio first
     temp_video = os.path.join(tempfile.gettempdir(), "temp_video_no_audio.mp4")
@@ -156,9 +213,20 @@ def remove_watermark_video(video_path, custom_name=""):
         if not ret:
             break
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
-        result = cv2.inpaint(frame, mask, 3, cv2.INPAINT_TELEA)
+        # High-quality inpainting for each frame
+        if watermark_areas:
+            # Apply the same watermark areas to each frame with high quality
+            result = cv2.inpaint(frame, mask, 5, cv2.INPAINT_NS)
+        else:
+            # For automatic detection, recalculate mask for each frame
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame_mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            frame_mask = cv2.bitwise_not(frame_mask)
+            kernel = np.ones((3,3), np.uint8)
+            frame_mask = cv2.morphologyEx(frame_mask, cv2.MORPH_CLOSE, kernel)
+            frame_mask = cv2.morphologyEx(frame_mask, cv2.MORPH_OPEN, kernel)
+            result = cv2.inpaint(frame, frame_mask, 5, cv2.INPAINT_NS)
+        
         out.write(result)
         frame_count += 1
         
@@ -187,17 +255,20 @@ def remove_watermark_video(video_path, custom_name=""):
         
         if has_audio:
             print("Original video has audio. Merging with processed video...")
-            # Merge video with original audio
+            # Merge video with original audio using high-quality settings
             cmd = [
                 'ffmpeg', '-y',  # -y to overwrite output file
                 '-i', temp_video,  # Input video (no audio)
                 '-i', video_path,  # Original video (for audio)
-                '-c:v', 'libx264',  # Re-encode video for compatibility
-                '-c:a', 'aac',     # Re-encode audio as AAC
+                '-c:v', 'libx264',  # H.264 codec for best compatibility and quality
+                '-c:a', 'aac',     # AAC audio codec
                 '-map', '0:v:0',   # Use video from first input
                 '-map', '1:a:0',   # Use audio from second input
                 '-shortest',       # End when shortest stream ends
-                '-preset', 'fast', # Faster encoding
+                '-preset', 'slow', # Higher quality encoding (slower but better)
+                '-crf', '18',      # Constant Rate Factor 18 (high quality, 0-51 scale)
+                '-pix_fmt', 'yuv420p',  # Ensure compatibility
+                '-movflags', '+faststart',  # Optimize for streaming
                 out_path
             ]
             
