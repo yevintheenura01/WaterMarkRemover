@@ -153,8 +153,21 @@ def remove_watermark_video(video_path, custom_name=""):
         print("Failed to open video:", video_path)
         return
 
-    # Use H.264 codec for better quality than mp4v
-    fourcc = cv2.VideoWriter_fourcc(*'H264')
+    # Use more compatible codec - try multiple options
+    # Try H.264 first, fallback to MP4V if not available
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'H264')
+        # Test if this codec works by creating a test writer
+        test_writer = cv2.VideoWriter('test.mp4', fourcc, fps, (width, height))
+        if not test_writer.isOpened():
+            raise Exception("H264 codec not available")
+        test_writer.release()
+        if os.path.exists('test.mp4'):
+            os.remove('test.mp4')
+    except:
+        # Fallback to MP4V codec which is more widely supported
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        print("Using MP4V codec (H.264 not available)")
     fps = cap.get(cv2.CAP_PROP_FPS)
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -222,6 +235,26 @@ def remove_watermark_video(video_path, custom_name=""):
     # Create temporary video file without audio first, using cropped size
     temp_video = os.path.join(tempfile.gettempdir(), "temp_video_no_audio.mp4")
     out = cv2.VideoWriter(temp_video, fourcc, fps, (crop_w, crop_h))
+    
+    # Check if VideoWriter was successfully created
+    if not out.isOpened():
+        print("Error: Could not create VideoWriter. Trying alternative codec...")
+        # Try alternative codecs
+        alternative_codecs = ['mp4v', 'XVID', 'MJPG']
+        for codec in alternative_codecs:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                out = cv2.VideoWriter(temp_video, fourcc, fps, (crop_w, crop_h))
+                if out.isOpened():
+                    print(f"Successfully using {codec} codec")
+                    break
+            except:
+                continue
+        
+        if not out.isOpened():
+            print("Error: Could not initialize any video codec. Please check your OpenCV installation.")
+            cap.release()
+            return
 
     print("Processing video frames...")
     frame_count = 0
@@ -284,8 +317,8 @@ def remove_watermark_video(video_path, custom_name=""):
                 '-map', '0:v:0',   # Use video from first input
                 '-map', '1:a:0',   # Use audio from second input
                 '-shortest',       # End when shortest stream ends
-                '-preset', 'slow', # Higher quality encoding (slower but better)
-                '-crf', '18',      # Constant Rate Factor 18 (high quality, 0-51 scale)
+                '-preset', 'medium', # Use medium preset for better compatibility
+                '-crf', '23',      # Constant Rate Factor 23 (good quality, more compatible)
                 '-pix_fmt', 'yuv420p',  # Ensure compatibility
                 '-movflags', '+faststart',  # Optimize for streaming
                 out_path
