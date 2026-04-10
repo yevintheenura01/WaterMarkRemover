@@ -4,6 +4,8 @@ import os
 import subprocess
 import tempfile
 import shutil
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
 # Global variables for manual watermark selection
 watermark_areas = []
@@ -147,11 +149,15 @@ def remove_watermark_image(image_path, custom_name=""):
     
     print("High-quality processed image saved to", out_path)
 
-def remove_watermark_video(video_path, custom_name=""):
+def remove_watermark_video(video_path, custom_name="", aspect_ratio=None, crop_enabled=True):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print("Failed to open video:", video_path)
         return
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     # Use more compatible codec - try multiple options
     # Try H.264 first, fallback to MP4V if not available
@@ -168,9 +174,6 @@ def remove_watermark_video(video_path, custom_name=""):
         # Fallback to MP4V codec which is more widely supported
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         print("Using MP4V codec (H.264 not available)")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
     # Get original video properties for quality preservation
     original_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
@@ -215,25 +218,32 @@ def remove_watermark_video(video_path, custom_name=""):
         print(f"Using {len(watermark_areas)} manually selected watermark areas")
         mask = create_watermark_mask(first_frame, watermark_areas)
     
-    # Compute 4:5 center-crop rectangle based on the first frame
-    target_aspect = 4 / 5.0
-    current_aspect = width / height if height != 0 else target_aspect
-    if current_aspect > target_aspect:
-        # Too wide: reduce width
-        crop_h = height
-        crop_w = int(round(crop_h * target_aspect))
+    # Compute crop rectangle based on selected aspect ratio.
+    # If crop is disabled or no ratio is provided, preserve original frame size.
+    if crop_enabled and aspect_ratio and aspect_ratio[0] > 0 and aspect_ratio[1] > 0:
+        target_aspect = aspect_ratio[0] / float(aspect_ratio[1])
+        current_aspect = width / float(height) if height != 0 else target_aspect
+        if current_aspect > target_aspect:
+            # Too wide: reduce width
+            crop_h = height
+            crop_w = int(round(crop_h * target_aspect))
+        else:
+            # Too tall: reduce height
+            crop_w = width
+            crop_h = int(round(crop_w / target_aspect))
+        # Ensure even dimensions for codec compatibility
+        crop_w = max(2, crop_w - (crop_w % 2))
+        crop_h = max(2, crop_h - (crop_h % 2))
+        crop_x = max(0, (width - crop_w) // 2)
+        crop_y = max(0, (height - crop_h) // 2)
+        print(f"Cropping video to aspect ratio {aspect_ratio[0]}:{aspect_ratio[1]}")
     else:
-        # Too tall: reduce height
-        crop_w = width
-        crop_h = int(round(crop_w / target_aspect))
-    # Ensure even dimensions for codec compatibility
-    crop_w -= crop_w % 2
-    crop_h -= crop_h % 2
-    crop_x = max(0, (width - crop_w) // 2)
-    crop_y = max(0, (height - crop_h) // 2)
+        crop_x, crop_y = 0, 0
+        crop_w, crop_h = width, height
+        print("Cropping disabled. Keeping original video dimensions.")
 
     # Create temporary video file without audio first, using cropped size
-    temp_video = os.path.join(tempfile.gettempdir(), "temp_video_no_audio.mp4")
+    temp_video = tempfile.NamedTemporaryFile(suffix="_no_audio.mp4", delete=False).name
     out = cv2.VideoWriter(temp_video, fourcc, fps, (crop_w, crop_h))
     
     # Check if VideoWriter was successfully created
@@ -346,17 +356,166 @@ def remove_watermark_video(video_path, custom_name=""):
     if os.path.exists(temp_video):
         os.remove(temp_video)
 
+
+def get_ratio_selection(ratio_label, custom_width_text, custom_height_text):
+    """Parse ratio selection from GUI into (aspect_ratio, crop_enabled)."""
+    presets = {
+        "4:5": (4, 5),
+        "1:1": (1, 1),
+        "16:9": (16, 9),
+        "9:16": (9, 16),
+    }
+
+    if ratio_label == "Original (No crop)":
+        return None, False
+
+    if ratio_label == "Custom":
+        try:
+            w = int(custom_width_text)
+            h = int(custom_height_text)
+            if w <= 0 or h <= 0:
+                raise ValueError
+            return (w, h), True
+        except ValueError:
+            raise ValueError("Custom ratio must use positive whole numbers.")
+
+    if ratio_label in presets:
+        return presets[ratio_label], True
+
+    return None, False
+
+
+def launch_simple_gui():
+    """Collect input path and processing options with a simple GUI."""
+    result = {}
+
+    root = tk.Tk()
+    root.title("Watermark Remover")
+    root.geometry("600x320")
+    root.resizable(False, False)
+
+    file_path_var = tk.StringVar()
+    output_name_var = tk.StringVar()
+    ratio_var = tk.StringVar(value="Original (No crop)")
+    custom_w_var = tk.StringVar(value="4")
+    custom_h_var = tk.StringVar(value="5")
+
+    def browse_file():
+        selected = filedialog.askopenfilename(
+            title="Choose Image or Video",
+            filetypes=[
+                ("Media Files", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.mp4 *.avi *.mov *.mkv *.wmv"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if selected:
+            file_path_var.set(selected)
+
+    def update_custom_ratio_state(*_args):
+        state = "normal" if ratio_var.get() == "Custom" else "disabled"
+        custom_w_entry.config(state=state)
+        custom_h_entry.config(state=state)
+
+    def process_and_close():
+        path = file_path_var.get().strip().strip('"\'')
+        if not path:
+            messagebox.showerror("Missing Input", "Please choose an image or video file.")
+            return
+        if not os.path.isfile(path):
+            messagebox.showerror("Invalid Path", "The selected file does not exist.")
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        image_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
+        video_exts = ['.mp4', '.avi', '.mov', '.mkv', '.wmv']
+
+        if ext not in image_exts + video_exts:
+            messagebox.showerror("Unsupported File", "Please select a supported image or video file.")
+            return
+
+        try:
+            aspect_ratio, crop_enabled = get_ratio_selection(
+                ratio_var.get(), custom_w_var.get().strip(), custom_h_var.get().strip()
+            )
+        except ValueError as err:
+            messagebox.showerror("Invalid Ratio", str(err))
+            return
+
+        result["path"] = path
+        result["custom_name"] = output_name_var.get().strip()
+        result["aspect_ratio"] = aspect_ratio
+        result["crop_enabled"] = crop_enabled
+        root.destroy()
+
+    def cancel_and_close():
+        result["cancelled"] = True
+        root.destroy()
+
+    tk.Label(root, text="Input file:", anchor="w").grid(row=0, column=0, padx=12, pady=(14, 6), sticky="w")
+    tk.Entry(root, textvariable=file_path_var, width=62).grid(row=1, column=0, padx=12, pady=4, sticky="w")
+    tk.Button(root, text="Browse", command=browse_file, width=12).grid(row=1, column=1, padx=6, pady=4)
+
+    tk.Label(root, text="Output filename (optional):", anchor="w").grid(row=2, column=0, padx=12, pady=(10, 6), sticky="w")
+    tk.Entry(root, textvariable=output_name_var, width=62).grid(row=3, column=0, padx=12, pady=4, sticky="w")
+
+    tk.Label(root, text="Video ratio:", anchor="w").grid(row=4, column=0, padx=12, pady=(12, 6), sticky="w")
+    ratio_combo = ttk.Combobox(
+        root,
+        textvariable=ratio_var,
+        values=["Original (No crop)", "4:5", "1:1", "16:9", "9:16", "Custom"],
+        state="readonly",
+        width=24,
+    )
+    ratio_combo.grid(row=5, column=0, padx=12, pady=4, sticky="w")
+    ratio_combo.bind("<<ComboboxSelected>>", update_custom_ratio_state)
+
+    custom_ratio_frame = tk.Frame(root)
+    custom_ratio_frame.grid(row=5, column=1, padx=6, pady=4, sticky="w")
+    tk.Label(custom_ratio_frame, text="Custom W:H").grid(row=0, column=0, padx=(0, 6), sticky="w")
+    custom_w_entry = tk.Entry(custom_ratio_frame, textvariable=custom_w_var, width=5)
+    custom_w_entry.grid(row=0, column=1, padx=(0, 3), sticky="w")
+    tk.Label(custom_ratio_frame, text=":").grid(row=0, column=2, sticky="w")
+    custom_h_entry = tk.Entry(custom_ratio_frame, textvariable=custom_h_var, width=5)
+    custom_h_entry.grid(row=0, column=3, padx=(3, 0), sticky="w")
+
+    tk.Label(
+        root,
+        text="Note: Ratio only affects videos. Images are processed at original size.",
+        fg="#555555",
+        anchor="w",
+    ).grid(row=6, column=0, padx=12, pady=(12, 8), sticky="w")
+
+    button_frame = tk.Frame(root)
+    button_frame.grid(row=7, column=0, columnspan=2, pady=(8, 14))
+    tk.Button(button_frame, text="Process", command=process_and_close, width=14).pack(side="left", padx=8)
+    tk.Button(button_frame, text="Cancel", command=cancel_and_close, width=14).pack(side="left", padx=8)
+
+    update_custom_ratio_state()
+    root.mainloop()
+
+    if result.get("cancelled"):
+        return None
+    return result if result else None
+
 def main():
-    path = input("Enter image or video file path: ").strip('"\'')
+    settings = launch_simple_gui()
+    if settings is None:
+        print("Operation cancelled.")
+        return
+
+    path = settings["path"]
+    custom_name = settings["custom_name"]
     ext = os.path.splitext(path)[1].lower()
-    
-    # Ask user for custom output name
-    custom_name = input("Enter custom output filename (or press Enter for default): ").strip()
-    
+
     if ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']:
         remove_watermark_image(path, custom_name)
     elif ext in ['.mp4', '.avi', '.mov', '.mkv', '.wmv']:
-        remove_watermark_video(path, custom_name)
+        remove_watermark_video(
+            path,
+            custom_name,
+            aspect_ratio=settings["aspect_ratio"],
+            crop_enabled=settings["crop_enabled"],
+        )
     else:
         print("Unsupported file type.")
 
