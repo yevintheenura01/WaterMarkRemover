@@ -4,9 +4,10 @@ Remove watermarks from images and videos with high quality, using manual area se
 
 ## Features
 - **Manual Watermark Area Selection:** Select watermarks on images or the first frame of videos using an interactive OpenCV window.
-- **Automatic Detection Fallback:** If you don't select any regions, the script tries to detect bright watermark areas automatically.
-- **High-Quality Inpainting:** Uses advanced inpainting algorithms (OpenCV INPAINT_NS) for best visual results.
-- **Video Support:** Processes every frame of a video, removes watermarks, center-crops to 4:5 aspect ratio for compatibility, and (optionally) merges original audio back using ffmpeg.
+- **Photo Watermark Modes:** For photos, choose a surrounding-pixels brush repair for the least distortion, a painted brush mask, full selected-area removal, a refined mask, stronger stubborn-watermark cleanup, or automatic light/dark/translucent watermark detection.
+- **Automatic Detection Fallback:** If you don't select any regions, the script tries to detect low-saturation watermark pixels using brightness and local-contrast cues.
+- **High-Quality Inpainting:** Uses OpenCV inpainting with feathered blending to reduce hard edges and visible smearing.
+- **Video Support:** Processes every frame of a video, removes watermarks, optionally crops to a selected aspect ratio, and merges original audio back using ffmpeg when available.
 - **Smart Output Naming:** Automatically names the output to avoid overwriting originals, or lets you specify a custom filename.
 - **Cross-Platform:** Works on Windows, macOS, and Linux (as long as Python and dependencies are installed).
 
@@ -43,6 +44,18 @@ Enter image or video file path: myphoto_with_watermark.jpg
 Enter custom output filename (or press Enter for default): cleaned_photo.png
 ```
 - An OpenCV window will appear.
+- In the GUI, choose a photo watermark mode:
+    - **Manual brush surrounding pixels:** Paint only the watermark pixels. Each painted area is repaired from its immediate surrounding pixels to reduce distortion.
+    - **Manual brush mask (least distortion):** Paint only the watermark pixels. This is best when a watermark overlaps furniture, faces, fabric, plants, rugs, or other detailed areas.
+    - **Manual refined mask (best for photos):** Select the watermark area; the script tries to remove only logo/text-like pixels inside that selection.
+    - **Manual area (best for solid logos):** Select the exact watermark region; the full region is inpainted.
+    - **Manual strong cleanup (stubborn photos):** Select the watermark area and use a more aggressive mask plus two-pass inpainting.
+    - **Auto light watermark / Auto dark watermark:** Skip manual selection and let the script look for simple light or dark watermark pixels.
+    - **Auto translucent watermark:** Skip manual selection and let the script look for low-saturation overlays that differ subtly from the surrounding image.
+- Use the photo cleanup strength slider:
+    - **1:** Softer cleanup for delicate textures.
+    - **2:** Balanced default.
+    - **3:** Stronger cleanup for visible leftover watermark traces.
 - **Instructions:**
     - Click and drag to select one or more watermark areas.
     - Press `r` to reset all selections.
@@ -57,11 +70,12 @@ Enter image or video file path: video_with_watermark.mp4
 Enter custom output filename (or press Enter for default):
 ```
 - Select watermark areas on the first frame as with images.
-- The script processes each frame, removes the watermark, and center-crops the video to 4:5 ratio.
+- If you skip selection, the script uses automatic translucent watermark detection on each frame.
+- The script processes each frame, removes the watermark, and crops only when a video ratio is selected.
 - If ffmpeg is installed, the final video merges the original audio track.
 
 ### Automatic Detection Fallback
-- If you don't select any region(s), the script tries to automatically find and remove bright watermark areas.
+- If you don't select any region(s), the script tries to automatically find and remove translucent watermark-like areas.
 - For best quality, manual selection is recommended.
 
 ## Notes
